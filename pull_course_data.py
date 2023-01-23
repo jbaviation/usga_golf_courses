@@ -12,30 +12,38 @@ import time
 import datetime
 
 
-def get_states(base_url='https://ncrdb.usga.org/'):
-	"""Get all states and state-ids on the https://ncrdb.usga.org/ webpage.
+def get_states(base_url='https://ncrdb.usga.org/', returns='state_name_only'):
+    """Get all states and state-ids on the https://ncrdb.usga.org/ webpage.
 	
 	Parameters
 	----------
 	base_url : str, default='https://ncrdb.usga.org/'
 		USGA NCRDB base url. This shouldn't change unless the host changes its base url.
+    returns : {'state_name_only', 'state_name_and_id'}, default='state_name_only
 
 	Returns
 	-------
-	list of tuples
-		Each tuple contains (name of state, state id).
-	"""
-	page = requests.get(base_url)
-	soup = BeautifulSoup(page.content, 'html.parser')
+	list of (state_name, state_id) or state_name
+		Depends on returns parameter to determine what is returned
+    """
 
-	state_list = []
-	for opt in soup.find(attrs={'id': 'ddState'}).find_all('option'):
-		if opt.text == '(Select)':
-			continue
-		state_list.append((opt.text, opt['value']))
+    page = requests.get(base_url)
+    soup = BeautifulSoup(page.content, 'html.parser')
 
-	return state_list
-
+    state_list = []
+    for opt in soup.find(attrs={'id': 'ddState'}).find_all('option'):
+        if opt.text == '(Select)':
+            continue
+        
+        if returns == 'state_name_only':
+            state_list.append(opt.text)
+        elif returns == 'state_name_and_id':
+            state_list.append((opt.text, opt['value']))
+        else:
+            raise NameError(f'returns=[{returns}] which is not a valid name.')
+        
+    return state_list
+            
 
 def get_courses_by_state(state, archive=None, driver_loc='/opt/homebrew/bin/chromedriver', base_url='https://ncrdb.usga.org/'):
     """Get a DataFrame of all the courses in the provided state.  
@@ -67,12 +75,16 @@ def get_courses_by_state(state, archive=None, driver_loc='/opt/homebrew/bin/chro
 
     # Select state
     select = Select(driver.find_element('id', 'ddState'))
-    select.select_by_visible_text(state[0])
+    select.select_by_visible_text(state)
 
     # Click submit button and wait for table
     driver.find_element('id', 'myButton').click()
     tbl_id = 'gvCourses'
-    WebDriverWait(driver, 30).until(expected_conditions.visibility_of_element_located((By.ID, tbl_id)))
+    try:
+        WebDriverWait(driver, 10).until(expected_conditions.visibility_of_element_located((By.ID, tbl_id)))
+    except:
+         driver.quit()
+         return None
 
     # Get soup of current page
     new_soup = BeautifulSoup(driver.page_source, 'lxml')
@@ -162,6 +174,81 @@ def get_courses_by_state(state, archive=None, driver_loc='/opt/homebrew/bin/chro
 
 
 # Combine all courses in one DataFrame
+def get_courses(states, archive=None, driver_loc='/opt/homebrew/bin/chromedriver', base_url='https://ncrdb.usga.org/'):
+    """Get a DataFrame of all the courses in the provided states.  
+    
+    Parameters
+    ----------
+    state : list of str
+        A list of the States/Provinces that the courses will be pulled from.  Be sure that the inputted state exists in the get_states()
+        function.
+    archive : pd.DataFrame, optional
+        If this is an incremental pull, input the DataFrame from the last pull to see what the changes are.
+    driver_loc : str, default='/opt/homebrew/bin/chromedriver'
+        The local location of your Chrome Driver.  To find the location to but in this field enter the following command:
+        >>> type chromedriver
+        chromedriver is /opt/homebrew/bin/chromedriver
+	base_url : str, default='https://ncrdb.usga.org/'
+		USGA NCRDB base url. This shouldn't change unless the host changes its base url.
+
+    Returns
+    -------
+    pd.DataFrame
+        Containing all courses in the listed states or if archive is not None, returns the new and different course instances.
+    """
+
+    # Loop thru the states and combine dataframes
+    course_list = []
+    for state in states:
+        # Pull data from the state
+        courses = get_courses_by_state(state=state, 
+                                       archive=archive,
+                                       driver_loc=driver_loc,
+                                       base_url=base_url)
+        if courses is not None:
+            course_list.append(courses)
+        else:
+            print(f'WARNING: {state} contains no courses.')
+
+        # Wait between pulls
+        time.sleep(3)
+
+    # Return the concatenated dataframe
+    return pd.concat(course_list)
+
+
+# Store the dataframe
+def store_courses(df, file='data/courses.csv'):
+    """Store the get_courses() dataframe as a csv.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Course DataFrame to be saved.
+    file : str
+        Filename to store the data.
+    """
+
+    df.to_csv(file)
+    print(f'INFO: Successfully wrote the courses dataframe to {file}')
+
+
+def restore_courses(file='data/courses.csv'):
+    """Restore get_courses() dataframe from the csv.
+    
+    Parameters
+    ----------
+    file : str
+        Filename to store the data.
+
+    Returns
+    -------
+    pd.DataFrame
+        Containing all courses retrieved from the get_courses() function.
+    """
+
+    return pd.read_csv(file)
+
 
 
 # Scrape data from each course and create new DataFrame with course_id as foreign key
