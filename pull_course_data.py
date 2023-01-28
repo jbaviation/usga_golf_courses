@@ -10,6 +10,7 @@ from selenium.webdriver.chrome.service import Service
 import re
 import time
 import datetime
+import os
 
 
 def get_states(base_url='https://ncrdb.usga.org/', returns='state_name_only'):
@@ -217,8 +218,248 @@ def get_courses(states, archive=None, driver_loc='/opt/homebrew/bin/chromedriver
     return pd.concat(course_list)
 
 
+def get_course_details(url, course_id):
+    """Read the course tee details for the provided url.
+    
+    Parameters
+    ----------
+    url : str
+        USGA NCRDB website url to pull tee data.
+    
+    Returns
+    -------
+    """
+
+    page = requests.get(url)
+    soup = BeautifulSoup(page.content, 'html.parser')
+
+    # Get table
+    tbl_id = 'gvTee'
+    tee_table = soup.find(attrs={'id': tbl_id})
+
+    # If no table exists
+    if tee_table is None:
+        return None
+
+    # Initialize course deets and loop thru
+    course_deets = []
+    for i, tr in enumerate(tee_table.find_all('tr')):
+
+        # Handle the header
+        if i==0:
+            header = [re.sub(r'[^A-Za-z0-9\._/]+', '', re.sub(r'\s+', '_', th.text.lower())).strip('_') for th in tr.find_all('th')]
+            header += ['course_id']
+            continue
+
+        # Loop thru each column
+        course_tee = [re.sub(r'[^A-Za-z0-9\./]+', '', td.text.lower()) for td in tr.find_all('td')] + [course_id]
+            
+        # apppend tee to course_deets
+        course_deets.append(course_tee)
+
+    # Create dataframe and clean
+    df = pd.DataFrame(course_deets, columns=header).drop(['', 'ch'], axis=1)
+    df.insert(0, 'course_id', df.pop('course_id'))
+    
+    return df
+
+
+def get_course_details_all(courses, existing_data=None, update=False, sleep=1, progress_bar=True):
+    """Loop thru all courses from get_courses() or restore_courses().
+
+    Parameters
+    ----------
+    courses : pd.DataFrame
+        Courses DataFrame which is a result of calling get_courses() or restore_courses().
+    existing_data : pd.DataFrame, optional
+        If a partial list or full list already exists, include it here. 
+    update : bool, default=False
+        TODO: False will ignore course ids that already exist.  True will look for changes to the existing courses.
+    sleep : int
+        Sleep time in between website hits.
+    progress_bar : bool, default=True
+        Whether or not to show the progress bar. True is recommended.
+
+    Returns
+    -------
+    dict
+        'all_courses' : DataFrame of all course details
+        'new_courses' : DataFrame of only new course details
+        'failed_courses' : DataFrame of courses that failed
+        'modified_courses' : DataFrame of courses that have modified data
+        'skipped_courses' : DataFrame of courses that were skipped not out of error
+    """
+
+    # Get list of existing course_ids from existing_data
+    exclude_course_ids = []
+    if existing_data is not None:
+        exclude_course_ids = existing_data['course_id'].unique().tolist()
+    
+    # Loop thru courses to get course details
+    names = ['all_courses', 'new_courses', 'failed_courses', 'modified_courses', 'skipped_courses']
+    all_courses = []
+    new_courses = []
+    failed_courses = []
+    modified_courses = []
+    skipped_courses = []
+    for i, row in courses.iterrows():
+        # Print status
+        if progress_bar:
+            printProgressBar(i, len(courses), prefix=f"Processing {row['course_id']}")
+
+        # Check if this course is in exclude_course_ids
+        if row['course_id'] in exclude_course_ids:
+            skipped_courses.append(row)
+            all_courses.append(existing_data[existing_data['course_id']==row['course_id']])
+            continue
+
+        # Get course details
+        try:
+            tees = get_course_details(row['url'], row['course_id'])
+        except:
+            failed_courses.append(row)
+            continue
+
+        # Append data
+        if tees is None:
+            skipped_courses.append(row)
+        # TODO: add check for modified courses
+        else:
+            all_courses.append(tees)
+            new_courses.append(tees)
+
+        # Wait between hits
+        time.sleep(sleep)
+
+    # Finalize progress bar
+    if progress_bar:
+        printProgressBar(len(courses), len(courses), prefix=f"COMPLETED")
+
+    # Once done iterating convert all dataframe lists into dataframes
+    out_dict = {}
+    for ls, name in zip([all_courses, new_courses, failed_courses, modified_courses, skipped_courses], names):
+        if len(ls) == 0:
+            out_dict[name] = None
+        else:
+            out_dict[name] = pd.concat(ls).reset_index(drop=True)
+
+    return out_dict
+
+
+def clean_courses(courses):
+    """Clean the DataFrame returned from get_courses() or restore_courses()."""
+    df = courses.copy()
+
+    # Utilize title case structure
+    for col in ['club_name', 'course_name', 'city']:
+        df[col] = df[col].str.title()
+
+    return df
+
+
+def store_course_details(dfs, file='data/course_details.csv', data_folder='data'):
+    """Store the get_course_details_all()['all_courses'] dataframe as a csv.
+
+    Parameters
+    ----------
+    dfs : dict
+        Dictionary containing DataFrames under the following keys:
+        'all_courses' : DataFrame of all course details
+        'new_courses' : DataFrame of only new course details
+        'failed_courses' : DataFrame of courses that failed
+        'modified_courses' : DataFrame of courses that have modified data
+        'skipped_courses' : DataFrame of courses that were skipped not out of error
+    data_folder : str
+        Directory that the data is to be stored in.
+    """
+    # Rewrite to make each dataframe a file
+    filenames = [os.path.join(data_folder, f'all_course_details_{get_date()}.csv'),
+                 os.path.join(data_folder, f'new_course_details_{get_date()}.csv'),
+                 os.path.join(data_folder, f'failed_course_details_{get_date()}.csv'),
+                 os.path.join(data_folder, f'modified_course_details_{get_date()}.csv'),
+                 os.path.join(data_folder, f'skipped_course_details_{get_date()}.csv')]
+
+    keys = ['all_courses', 'new_courses', 'failed_courses', 'modified_courses', 'skipped_courses']
+
+    for key, filename in zip(keys, filenames):
+        df = dfs[key]
+
+        # If none, write an empty file
+        if df is None:
+            with open(filename, 'w+') as f:
+                f.write('')
+        else:
+            df.to_csv(filename, index=False)
+
+        print(f'INFO: Successfully wrote the course details dataframe to {filename}')
+
+
+def restore_course_details(data_folder='data', data=None, dates=None):
+    """Restore the get_course_details_all() dataframe from csv.
+
+    Parameters
+    ----------
+    data_folder : str
+        Directory that the data is to be stored in.
+    data : list of {'all_courses', 'new_courses', 'failed_courses', 'modified_courses', 'skipped_courses'}, optional
+        Desired data to be returned.  Defaults to all files.
+    dates : str or datetime or list of, optional
+        Date of files that are being restored. If list is used, it must be the same length as data. If all files
+        contain the same date, a str or datetime can be entered. If no date is entered, today's date is assumed
+        for all files.
+
+    Returns
+    -------
+    dict
+        Dictionary containing DataFrames under the selected keys of the following:
+        'all_courses' : DataFrame of all course details
+        'new_courses' : DataFrame of only new course details
+        'failed_courses' : DataFrame of courses that failed
+        'modified_courses' : DataFrame of courses that have modified data
+        'skipped_courses' : DataFrame of courses that were skipped not out of error
+    """
+    # Create file_mapping
+    fmap = {'all_courses': 'all_course_details_{}.csv', 
+            'new_courses': 'new_course_details_{}.csv', 
+            'failed_courses': 'failed_course_details_{}.csv', 
+            'modified_courses': 'modified_course_details_{}.csv', 
+            'skipped_courses': 'skipped_course_details_{}.csv'}
+
+    # Make data a list
+    if data is None:
+        data = list(fmap.keys())
+    elif isinstance(data, str):
+        data = [data]
+    elif not isinstance(data, list):
+        raise TypeError(f'data is of type {type(data)}.  Must be either str or list.')
+    elif any([d not in fmap.keys() for d in data]):
+        raise IndexError(f'Items in data must be in {list(fmap.keys())}')
+
+    # Make sense of dates
+    if dates is None:
+        dates = [get_date() for _ in range(len(data))]
+    elif isinstance(dates, str):
+        dates = [pd.to_datetime(dates).strftime('%Y%m%d') for _ in range(len(data))]
+    elif isinstance(dates, (list, tuple)) & (len(dates)==len(data)):
+        dates = [pd.to_datetime(d).strftime('%Y%m%d') for d in dates]
+    else:
+        raise LookupError('Unable to match up date input with data')
+
+    # Read files
+    dfs = {}
+    for key, date in zip(data, dates):
+        filename = os.path.join(data_folder, fmap[key].format(date))
+        try:
+            df = pd.read_csv(filename)
+        except:
+            df = None
+        dfs[key] = df
+
+    return dfs
+
+
 # Store the dataframe
-def store_courses(df, file='data/courses.csv'):
+def store_courses(df, file=None):
     """Store the get_courses() dataframe as a csv.
 
     Parameters
@@ -228,17 +469,23 @@ def store_courses(df, file='data/courses.csv'):
     file : str
         Filename to store the data.
     """
+    # Set default
+    if file is None:
+        file = f'data/courses_{get_date()}.csv'
+    # Look for date in file
+    elif not re.search(r'\d{8}', file):
+        raise FileNotFoundError(f'{file} does NOT contain date. Please adjust filename to include date.')
 
-    df.to_csv(file)
+    df.to_csv(file, index=False)
     print(f'INFO: Successfully wrote the courses dataframe to {file}')
 
 
-def restore_courses(file='data/courses.csv'):
+def restore_courses(file=None):
     """Restore get_courses() dataframe from the csv.
     
     Parameters
     ----------
-    file : str
+    file : str, optional
         Filename to store the data.
 
     Returns
@@ -246,9 +493,45 @@ def restore_courses(file='data/courses.csv'):
     pd.DataFrame
         Containing all courses retrieved from the get_courses() function.
     """
-
+    # Set default
+    if file is None:
+        file = f'data/courses_{get_date()}.csv'
+    # Look for date
+    elif not re.search(r'\d{8}', file):
+        raise FileNotFoundError(f'{file} does NOT contain date. Please adjust filename to include date.')
     return pd.read_csv(file)
 
 
+def get_date():
+    """Get date mostly used in naming files.
+    
+    Returns
+    -------
+    str
+        Date in YYYYMMDD format.
+    """
+    return datetime.datetime.now().strftime('%Y%m%d')
+
+
+def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=100, fill='█', printEnd="\r"):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        length      - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+        printEnd    - Optional  : end character (e.g. "\r", "\r\n") (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filledLength = int(length * iteration // total)
+    bar = fill * filledLength + '-' * (length - filledLength)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end = printEnd)
+    # Print New Line on Complete
+    if iteration == total: 
+        print()
 
 # Scrape data from each course and create new DataFrame with course_id as foreign key
