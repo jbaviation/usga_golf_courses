@@ -357,7 +357,7 @@ def clean_courses(courses):
     return df
 
 
-def store_course_details(dfs, file='data/course_details.csv', data_folder='data'):
+def store_course_details(dfs, data_folder='data'):
     """Store the get_course_details_all()['all_courses'] dataframe as a csv.
 
     Parameters
@@ -394,19 +394,19 @@ def store_course_details(dfs, file='data/course_details.csv', data_folder='data'
         print(f'INFO: Successfully wrote the course details dataframe to {filename}')
 
 
-def restore_course_details(data_folder='data', data=None, dates=None):
+def restore_course_details(data=None, dates=None, data_folder='data'):
     """Restore the get_course_details_all() dataframe from csv.
 
     Parameters
     ----------
-    data_folder : str
-        Directory that the data is to be stored in.
     data : list of {'all_courses', 'new_courses', 'failed_courses', 'modified_courses', 'skipped_courses'}, optional
         Desired data to be returned.  Defaults to all files.
     dates : str or datetime or list of, optional
         Date of files that are being restored. If list is used, it must be the same length as data. If all files
         contain the same date, a str or datetime can be entered. If no date is entered, today's date is assumed
         for all files.
+    data_folder : str, default='data'
+        Directory that the data is to be stored in.
 
     Returns
     -------
@@ -459,58 +459,63 @@ def restore_course_details(data_folder='data', data=None, dates=None):
 
 
 # Store the dataframe
-def store_courses(df, file=None):
+def store_courses(df, data_folder='data'):
     """Store the get_courses() dataframe as a csv.
 
     Parameters
     ----------
     df : pd.DataFrame
         Course DataFrame to be saved.
-    file : str
-        Filename to store the data.
+    data_folder : str
+        Directory that the data is to be stored in.
     """
-    # Set default
-    if file is None:
-        file = f'data/courses_{get_date()}.csv'
-    # Look for date in file
-    elif not re.search(r'\d{8}', file):
-        raise FileNotFoundError(f'{file} does NOT contain date. Please adjust filename to include date.')
+    # Set filename
+    file = os.path.join(data_folder, f'courses_{get_date()}.csv')
 
     df.to_csv(file, index=False)
     print(f'INFO: Successfully wrote the courses dataframe to {file}')
 
 
-def restore_courses(file=None):
+def restore_courses(date=None, data_folder='data'):
     """Restore get_courses() dataframe from the csv.
     
     Parameters
     ----------
-    file : str, optional
-        Filename to store the data.
+    date : str or datetime, optional
+        Date of the stored courses file.
+    data_folder : str, optional
+        Directory that the data is to be retrieved from. No input assumes today's date.
 
     Returns
     -------
     pd.DataFrame
         Containing all courses retrieved from the get_courses() function.
     """
-    # Set default
-    if file is None:
-        file = f'data/courses_{get_date()}.csv'
-    # Look for date
-    elif not re.search(r'\d{8}', file):
-        raise FileNotFoundError(f'{file} does NOT contain date. Please adjust filename to include date.')
-    return pd.read_csv(file)
+
+    # Set filename
+    filename = os.path.join(data_folder, f'courses_{get_date(date)}.csv')
+    return pd.read_csv(filename)
 
 
-def get_date():
+def get_date(date=None):
     """Get date mostly used in naming files.
     
+    Parameters
+    ----------
+    date : str or datetime, optional
+        Date to return as string.  No input returns today's date
+
     Returns
     -------
     str
         Date in YYYYMMDD format.
     """
-    return datetime.datetime.now().strftime('%Y%m%d')
+
+    fmt = '%Y%m%d'
+    if date is None:
+        return datetime.datetime.now().strftime(fmt)
+    else:
+        return pd.to_datetime(date).strftime('%Y%m%d')
 
 
 def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=100, fill='█', printEnd="\r"):
@@ -534,4 +539,3 @@ def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=
     if iteration == total: 
         print()
 
-# Scrape data from each course and create new DataFrame with course_id as foreign key
